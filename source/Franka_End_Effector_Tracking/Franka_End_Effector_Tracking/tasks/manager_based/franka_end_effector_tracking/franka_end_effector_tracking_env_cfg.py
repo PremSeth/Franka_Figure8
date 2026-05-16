@@ -124,7 +124,7 @@ class FrankaEndEffectorTrackingEnvCfg(ReachEnvCfg):
             center=(0.50, 0.00, 0.30),
             amplitude_x=0.12,
             amplitude_y=0.12,
-            frequency_hz=0.10,
+            frequency_hz=1,
         )
 
         # Tell the inherited reach rewards which body is the Franka end effector.
