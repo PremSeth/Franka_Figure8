@@ -1,180 +1,144 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-import math
+from __future__ import annotations
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg
-from isaaclab.envs import ManagerBasedRLEnvCfg
-from isaaclab.managers import EventTermCfg as EventTerm
-from isaaclab.managers import ObservationGroupCfg as ObsGroup
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
+
+import torch
+
+from isaaclab.envs.mdp.commands.commands_cfg import UniformPoseCommandCfg
+from isaaclab.envs.mdp.commands.pose_command import UniformPoseCommand
 from isaaclab.managers import ObservationTermCfg as ObsTerm
-from isaaclab.managers import RewardTermCfg as RewTerm
-from isaaclab.managers import SceneEntityCfg
-from isaaclab.managers import TerminationTermCfg as DoneTerm
-from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
+from isaaclab.utils.math import quat_from_euler_xyz, quat_unique
 
-from . import mdp
+from isaaclab_assets import FRANKA_PANDA_CFG
+from isaaclab_tasks.manager_based.manipulation.reach.reach_env_cfg import ReachEnvCfg
+import isaaclab_tasks.manager_based.manipulation.reach.mdp as reach_mdp
 
-##
-# Pre-defined configs
-##
-
-from isaaclab_assets.robots.cartpole import CARTPOLE_CFG  # isort:skip
-
-
-##
-# Scene definition
-##
+if TYPE_CHECKING:
+    from isaaclab.envs import ManagerBasedEnv, ManagerBasedRLEnv
 
 
-@configclass
-class FrankaEndEffectorTrackingSceneCfg(InteractiveSceneCfg):
-    """Configuration for a cart-pole scene."""
+class FigureEightPoseCommand(UniformPoseCommand):
+    """Continuously moving end-effector target following a planar figure-eight.
 
-    # ground plane
-    ground = AssetBaseCfg(
-        prim_path="/World/ground",
-        spawn=sim_utils.GroundPlaneCfg(size=(100.0, 100.0)),
-    )
+    This is the key conceptual change from *reaching* to *tracking*:
+    the robot is no longer rewarded for arriving at a fixed target, but for staying close to a target that keeps moving.
+    """
 
-    # robot
-    robot: ArticulationCfg = CARTPOLE_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    def __init__(self, cfg: "FigureEightPoseCommandCfg", env: ManagerBasedEnv):
+        super().__init__(cfg, env)
+        self.phase = torch.zeros(self.num_envs, device=self.device)
+        self.target_velocity_b = torch.zeros(self.num_envs, 3, device=self.device)
 
-    # lights
-    dome_light = AssetBaseCfg(
-        prim_path="/World/DomeLight",
-        spawn=sim_utils.DomeLightCfg(color=(0.9, 0.9, 0.9), intensity=500.0),
-    )
+    def _resample_command(self, env_ids: Sequence[int]):
+        # Give each environment a different starting point on the curve so the policy learns the whole path.
+        if self.cfg.randomize_phase_on_reset:
+            self.phase[env_ids] = torch.rand(len(env_ids), device=self.device) * (2.0 * torch.pi)
+        else:
+            self.phase[env_ids] = 0.0
+        self._write_pose_from_phase(env_ids)
 
+    def _update_command(self):
+        omega = 2.0 * torch.pi * self.cfg.frequency_hz
+        self.phase = torch.remainder(self.phase + omega * self._env.step_dt, 2.0 * torch.pi)
+        self._write_pose_from_phase(slice(None))
 
-##
-# MDP settings
-##
+    def _write_pose_from_phase(self, env_ids):
+        phase = self.phase[env_ids]
+        cx, cy, cz = self.cfg.center
+        omega = 2.0 * torch.pi * self.cfg.frequency_hz
 
+        # Figure-eight / Lissajous-style path in the robot base frame.
+        self.pose_command_b[env_ids, 0] = cx + self.cfg.amplitude_x * torch.sin(phase)
+        self.pose_command_b[env_ids, 1] = cy + self.cfg.amplitude_y * torch.sin(2.0 * phase)
+        self.pose_command_b[env_ids, 2] = cz
 
-@configclass
-class ActionsCfg:
-    """Action specifications for the MDP."""
+        # Keep the tool orientation fixed for the first milestone.
+        euler = torch.zeros((phase.shape[0], 3), device=self.device)
+        euler[:, 1] = torch.pi
+        quat = quat_from_euler_xyz(euler[:, 0], euler[:, 1], euler[:, 2])
+        self.pose_command_b[env_ids, 3:] = quat_unique(quat) if self.cfg.make_quat_unique else quat
 
-    joint_effort = mdp.JointEffortActionCfg(asset_name="robot", joint_names=["slider_to_cart"], scale=100.0)
-
-
-@configclass
-class ObservationsCfg:
-    """Observation specifications for the MDP."""
-
-    @configclass
-    class PolicyCfg(ObsGroup):
-        """Observations for policy group."""
-
-        # observation terms (order preserved)
-        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
-        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel)
-
-        def __post_init__(self) -> None:
-            self.enable_corruption = False
-            self.concatenate_terms = True
-
-    # observation groups
-    policy: PolicyCfg = PolicyCfg()
+        # Analytic derivative of the path. We expose this to the policy as a helpful tracking signal.
+        self.target_velocity_b[env_ids, 0] = self.cfg.amplitude_x * omega * torch.cos(phase)
+        self.target_velocity_b[env_ids, 1] = 2.0 * self.cfg.amplitude_y * omega * torch.cos(2.0 * phase)
+        self.target_velocity_b[env_ids, 2] = 0.0
 
 
 @configclass
-class EventCfg:
-    """Configuration for events."""
+class FigureEightPoseCommandCfg(UniformPoseCommandCfg):
+    """Configuration for a planar figure-eight command in the robot base frame."""
 
-    # reset
-    reset_cart_position = EventTerm(
-        func=mdp.reset_joints_by_offset,
-        mode="reset",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=["slider_to_cart"]),
-            "position_range": (-1.0, 1.0),
-            "velocity_range": (-0.5, 0.5),
-        },
+    class_type: type = FigureEightPoseCommand
+    center: tuple[float, float, float] = (0.50, 0.00, 0.30)
+    amplitude_x: float = 0.12
+    amplitude_y: float = 0.12
+    frequency_hz: float = 0.50
+    randomize_phase_on_reset: bool = True
+
+    # UniformPoseCommandCfg expects pose ranges, even though this subclass generates poses analytically.
+    ranges: UniformPoseCommandCfg.Ranges = UniformPoseCommandCfg.Ranges(
+        pos_x=(0.0, 0.0),
+        pos_y=(0.0, 0.0),
+        pos_z=(0.0, 0.0),
+        roll=(0.0, 0.0),
+        pitch=(0.0, 0.0),
+        yaw=(0.0, 0.0),
     )
 
-    reset_pole_position = EventTerm(
-        func=mdp.reset_joints_by_offset,
-        mode="reset",
-        params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=["cart_to_pole"]),
-            "position_range": (-0.25 * math.pi, 0.25 * math.pi),
-            "velocity_range": (-0.25 * math.pi, 0.25 * math.pi),
-        },
-    )
+
+def figure_eight_phase(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
+    """Encode path phase as sin/cos so the policy can distinguish where it is along the loop."""
+    command_term: FigureEightPoseCommand = env.command_manager.get_term(command_name)
+    return torch.stack((torch.sin(command_term.phase), torch.cos(command_term.phase)), dim=-1)
+
+
+def figure_eight_target_velocity(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
+    """Expose the desired Cartesian velocity of the moving target in the robot base frame."""
+    command_term: FigureEightPoseCommand = env.command_manager.get_term(command_name)
+    return command_term.target_velocity_b
 
 
 @configclass
-class RewardsCfg:
-    """Reward terms for the MDP."""
+class FrankaEndEffectorTrackingEnvCfg(ReachEnvCfg):
+    """Franka task for continuous figure-eight end-effector tracking."""
 
-    # (1) Constant running reward
-    alive = RewTerm(func=mdp.is_alive, weight=1.0)
-    # (2) Failure penalty
-    terminating = RewTerm(func=mdp.is_terminated, weight=-2.0)
-    # (3) Primary task: keep pole upright
-    pole_pos = RewTerm(
-        func=mdp.joint_pos_target_l2,
-        weight=-1.0,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["cart_to_pole"]), "target": 0.0},
-    )
-    # (4) Shaping tasks: lower cart velocity
-    cart_vel = RewTerm(
-        func=mdp.joint_vel_l1,
-        weight=-0.01,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["slider_to_cart"])},
-    )
-    # (5) Shaping tasks: lower pole angular velocity
-    pole_vel = RewTerm(
-        func=mdp.joint_vel_l1,
-        weight=-0.005,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["cart_to_pole"])},
-    )
+    def __post_init__(self):
+        super().__post_init__()
 
+        # Replace the generic arm placeholder from ReachEnvCfg with the Franka Panda.
+        self.scene.robot = FRANKA_PANDA_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
-@configclass
-class TerminationsCfg:
-    """Termination terms for the MDP."""
+        # Replace random point targets with one continuously moving target.
+        self.commands.ee_pose = FigureEightPoseCommandCfg(
+            asset_name="robot",
+            body_name="panda_hand",
+            resampling_time_range=(self.episode_length_s, self.episode_length_s),
+            debug_vis=True,
+            center=(0.50, 0.00, 0.30),
+            amplitude_x=0.12,
+            amplitude_y=0.12,
+            frequency_hz=0.10,
+        )
 
-    # (1) Time out
-    time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    # (2) Cart out of bounds
-    cart_out_of_bounds = DoneTerm(
-        func=mdp.joint_pos_out_of_manual_limit,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["slider_to_cart"]), "bounds": (-3.0, 3.0)},
-    )
+        # Tell the inherited reach rewards which body is the Franka end effector.
+        self.rewards.end_effector_position_tracking.params["asset_cfg"].body_names = ["panda_hand"]
+        self.rewards.end_effector_position_tracking_fine_grained.params["asset_cfg"].body_names = ["panda_hand"]
+        self.rewards.end_effector_orientation_tracking.params["asset_cfg"].body_names = ["panda_hand"]
 
+        # Joint-position control is a deliberately simple first action space.
+        self.actions.arm_action = reach_mdp.JointPositionActionCfg(
+            asset_name="robot", joint_names=["panda_joint.*"], scale=0.5, use_default_offset=True
+        )
 
-##
-# Environment configuration
-##
-
-
-@configclass
-class FrankaEndEffectorTrackingEnvCfg(ManagerBasedRLEnvCfg):
-    # Scene settings
-    scene: FrankaEndEffectorTrackingSceneCfg = FrankaEndEffectorTrackingSceneCfg(num_envs=4096, env_spacing=4.0)
-    # Basic settings
-    observations: ObservationsCfg = ObservationsCfg()
-    actions: ActionsCfg = ActionsCfg()
-    events: EventCfg = EventCfg()
-    # MDP settings
-    rewards: RewardsCfg = RewardsCfg()
-    terminations: TerminationsCfg = TerminationsCfg()
-
-    # Post initialization
-    def __post_init__(self) -> None:
-        """Post initialization."""
-        # general settings
-        self.decimation = 2
-        self.episode_length_s = 5
-        # viewer settings
-        self.viewer.eye = (8.0, 0.0, 5.0)
-        # simulation settings
-        self.sim.dt = 1 / 120
-        self.sim.render_interval = self.decimation
+        # The inherited reach observations already include joint state, the target pose, and previous action.
+        # Add target velocity so the policy can anticipate motion instead of only reacting to position error.
+        self.observations.policy.target_velocity = ObsTerm(
+            func=figure_eight_target_velocity, params={"command_name": "ee_pose"}
+        )
