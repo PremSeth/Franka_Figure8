@@ -35,6 +35,7 @@ class FigureEightPoseCommand(UniformPoseCommand):
         super().__init__(cfg, env)
         self.phase = torch.zeros(self.num_envs, device=self.device)
         self.target_velocity_b = torch.zeros(self.num_envs, 3, device=self.device)
+        self.target_acceleration_b = torch.zeros(self.num_envs, 3, device=self.device)
 
     def _resample_command(self, env_ids: Sequence[int]):
         # Give each environment a different starting point on the curve so the policy learns the whole path.
@@ -70,6 +71,12 @@ class FigureEightPoseCommand(UniformPoseCommand):
         self.target_velocity_b[env_ids, 1] = 2.0 * self.cfg.amplitude_y * omega * torch.cos(2.0 * phase)
         self.target_velocity_b[env_ids, 2] = 0.0
 
+        # Analytic second derivative of the path. Some task variants expose this when delay makes
+        # short-horizon anticipation important.
+        self.target_acceleration_b[env_ids, 0] = -self.cfg.amplitude_x * omega**2 * torch.sin(phase)
+        self.target_acceleration_b[env_ids, 1] = -4.0 * self.cfg.amplitude_y * omega**2 * torch.sin(2.0 * phase)
+        self.target_acceleration_b[env_ids, 2] = 0.0
+
 
 @configclass
 class FigureEightPoseCommandCfg(UniformPoseCommandCfg):
@@ -103,6 +110,12 @@ def figure_eight_target_velocity(env: ManagerBasedRLEnv, command_name: str) -> t
     """Expose the desired Cartesian velocity of the moving target in the robot base frame."""
     command_term: FigureEightPoseCommand = env.command_manager.get_term(command_name)
     return command_term.target_velocity_b
+
+
+def figure_eight_target_acceleration(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
+    """Expose the desired Cartesian acceleration of the moving target in the robot base frame."""
+    command_term: FigureEightPoseCommand = env.command_manager.get_term(command_name)
+    return command_term.target_acceleration_b
 
 
 @configclass
