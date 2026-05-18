@@ -91,8 +91,8 @@ Use the matching deterministic evaluation task when evaluating a checkpoint:
 | Checkpoint type | Evaluation task |
 | --- | --- |
 | 35-observation delayed/noisy multi-frequency policy | `Template-Franka-End-Effector-Tracking-Delayed-Noisy-Multi-Frequency-Eval-v0` |
-| 38-observation acceleration policy | `Template-Franka-End-Effector-Tracking-Delayed-Multi-Frequency-With-Acceleration-Eval-v0` |
-| 38-observation acceleration + noisy policy | `Template-Franka-End-Effector-Tracking-Delayed-Multi-Frequency-With-Acceleration-Noisy-Eval-v0` |
+| 38-observation delayed/multi-frequency/acceleration/noisy policy, including `checkpoints/best_accel_noisy_38obs.pt` | `Template-Franka-End-Effector-Tracking-Delayed-Multi-Frequency-With-Acceleration-Noisy-Eval-v0` |
+| 38-observation acceleration policy without noisy observations | `Template-Franka-End-Effector-Tracking-Delayed-Multi-Frequency-With-Acceleration-Eval-v0` |
 
 ## Run a pretrained policy
 
