@@ -25,6 +25,7 @@ from pathlib import Path
 from isaaclab.app import AppLauncher
 
 import cli_args  # isort: skip
+from checkpoint_compat import load_rsl_rl_checkpoint_compat  # isort: skip
 
 parser = argparse.ArgumentParser(description="Evaluate Franka figure-eight tracking at fixed frequencies.")
 parser.add_argument("--task", type=str, required=True, help="Use a deterministic eval task for fair plots.")
@@ -426,7 +427,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         runner = DistillationRunner(wrapped_env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     else:
         raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
-    runner.load(resume_path)
+    load_rsl_rl_checkpoint_compat(runner, resume_path)
     policy = runner.get_inference_policy(device=wrapped_env.unwrapped.device)
     dt = wrapped_env.unwrapped.step_dt
 
