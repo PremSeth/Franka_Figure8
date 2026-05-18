@@ -90,13 +90,15 @@ If local installation is undesirable, use the Docker workflow below instead; it 
 
 Pretrained checkpoints matching the packaged results are in `checkpoints/`; the examples below use the strongest submitted model.
 
+If you receive an error while running the non-headless play script below, its best to try using the headless version beneath it that will record a 30-second video for you instead and save it in videos/playback
+Headless video playback:
+
 ```bash
 python scripts/rsl_rl/play.py \
   --task Template-Franka-End-Effector-Tracking-Delayed-Multi-Frequency-With-Acceleration-Noisy-v0 \
   --checkpoint checkpoints/best_accel_noisy_38obs.pt \
   --num_envs 1
 ```
-
 Headless video playback:
 
 ```bash
@@ -105,7 +107,9 @@ python scripts/rsl_rl/play.py \
   --checkpoint checkpoints/best_accel_noisy_38obs.pt \
   --num_envs 1 \
   --headless \
-  --video
+  --video \
+  --video_length 900 \
+  --video_dir videos/playback
 ```
 
 ## Train
