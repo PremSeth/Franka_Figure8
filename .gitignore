@@ -73,3 +73,9 @@ tests/
 # TacSL sensor
 **/tactile_record/*
 **/gelsight_r15_data/*
+
+# Keep curated submission artifacts even though raw training videos/logs are ignored.
+!results/
+!results/**
+!checkpoints/
+!checkpoints/**

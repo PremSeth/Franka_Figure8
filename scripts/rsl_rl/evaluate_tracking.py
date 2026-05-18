@@ -6,10 +6,12 @@
 
 Outputs, per frequency:
 - one video
+- one animated XY tracking GIF
 - one performance plot
 - one diagnostics plot showing sensor noise and actuator delay
 - one NPZ data archive
 A CSV summary is also written across all frequencies.
+By default, evaluation sweeps all training frequencies: 0.25, 0.50, 0.75, and 1.00 Hz.
 """
 
 """Launch Isaac Sim Simulator first."""
@@ -18,6 +20,7 @@ import argparse
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
 
 from isaaclab.app import AppLauncher
 
@@ -26,7 +29,7 @@ import cli_args  # isort: skip
 parser = argparse.ArgumentParser(description="Evaluate Franka figure-eight tracking at fixed frequencies.")
 parser.add_argument("--task", type=str, required=True, help="Use a deterministic eval task for fair plots.")
 parser.add_argument("--agent", type=str, default="rsl_rl_cfg_entry_point", help="RL agent config entry point.")
-parser.add_argument("--frequencies", type=float, nargs="+", default=[0.25, 0.50, 0.75])
+parser.add_argument("--frequencies", type=float, nargs="+", default=[0.25, 0.50, 0.75, 1.00])
 parser.add_argument("--num_steps", type=int, default=360, help="Evaluation horizon per frequency in env steps.")
 parser.add_argument("--steady_state_start_s", type=float, default=2.0)
 parser.add_argument("--output_dir", type=str, default=None)
@@ -45,10 +48,12 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import csv
+import json
 import time
 
 import gymnasium as gym
 import matplotlib.pyplot as plt
+from matplotlib import animation
 import numpy as np
 import torch
 from packaging import version
@@ -64,6 +69,18 @@ import Franka_End_Effector_Tracking.tasks  # noqa: F401
 
 import importlib.metadata as metadata
 installed_version = metadata.version("rsl-rl-lib")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _portable_artifact_path(path: str) -> str:
+    """Prefer repo-relative paths in saved metadata so artifacts survive moving the clone."""
+    resolved = Path(path).resolve()
+    try:
+        return str(resolved.relative_to(PROJECT_ROOT))
+    except ValueError:
+        # If the file lives outside the repo, avoid baking a machine-specific absolute
+        # path into a sharable artifact while still retaining the checkpoint identity.
+        return resolved.name
 
 
 def _metric_bundle(times, desired_pos, actual_pos, desired_quat, actual_quat, steady_state_start_s, dt):
@@ -112,16 +129,137 @@ def _save_performance_plot(path, freq, times, desired_pos, actual_pos, metrics):
     axes[1, 1].plot(times, metrics["jerk_m_per_s3"])
     axes[1, 1].set(title="End-effector jerk", xlabel="time [s]", ylabel="jerk [m/s³]")
 
-    summary = (
-        f"Mean error: {metrics['mean_error_m']:.4f} m\n"
-        f"RMSE: {metrics['rmse_m']:.4f} m\n"
-        f"Steady-state RMSE: {metrics['steady_state_rmse_m']:.4f} m\n"
-        f"Mean jerk: {metrics['mean_jerk_m_per_s3']:.4f} m/s³\n"
-        f"Mean orientation error: {metrics['mean_orientation_error_deg']:.3f}°"
-    )
-    fig.text(0.72, 0.02, summary, family="monospace", fontsize=10)
-    fig.tight_layout(rect=(0, 0.06, 1, 0.96))
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
     fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def _save_metrics_plot(path, freq, metrics):
+    """Save scalar metrics outside the performance figure so labels never overlap axes."""
+    lines = [
+        f"Tracking metrics at {freq:.2f} Hz",
+        "",
+        f"Mean position error:        {metrics['mean_error_m']:.4f} m",
+        f"RMSE:                       {metrics['rmse_m']:.4f} m",
+        f"Steady-state RMSE:          {metrics['steady_state_rmse_m']:.4f} m",
+        f"Mean end-effector jerk:     {metrics['mean_jerk_m_per_s3']:.4f} m/s³",
+        f"Mean orientation error:     {metrics['mean_orientation_error_deg']:.3f}°",
+    ]
+    fig = plt.figure(figsize=(7.4, 3.2))
+    fig.patch.set_facecolor("white")
+    fig.text(0.06, 0.88, lines[0], fontsize=15, weight="bold")
+    fig.text(0.06, 0.72, "\n".join(lines[2:]), family="monospace", fontsize=12, va="top")
+    plt.axis("off")
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _save_aggregate_summary(output_dir, records):
+    """Save a plain-language summary across every evaluated frequency."""
+    pos_errors = np.concatenate([record["metrics"]["position_error_m"] for record in records])
+    ori_errors = np.concatenate([record["metrics"]["orientation_error_deg"] for record in records])
+    jerks = np.concatenate([record["metrics"]["jerk_m_per_s3"] for record in records])
+    total_error = float(pos_errors.sum())
+    mean_error = float(pos_errors.mean())
+    rmse = float(np.sqrt(np.mean(pos_errors**2)))
+    max_error = float(pos_errors.max())
+    mean_ori = float(ori_errors.mean())
+    mean_jerk = float(jerks.mean())
+    n = int(pos_errors.size)
+    freqs = ", ".join(f"{record['freq']:.2f}" for record in records)
+    sentence = (
+        f"Across all {len(records)} frequencies ({freqs} Hz), total position error was {total_error:.3f} m "
+        f"over {n} sampled time steps. Overall mean error was {mean_error:.4f} m and overall RMSE was {rmse:.4f} m."
+    )
+    with open(os.path.join(output_dir, "aggregate_summary.txt"), "w") as file:
+        file.write(sentence + "\n")
+    with open(os.path.join(output_dir, "aggregate_summary.csv"), "w", newline="") as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=[
+                "num_frequencies",
+                "num_samples",
+                "total_error_m",
+                "overall_mean_error_m",
+                "overall_rmse_m",
+                "max_error_m",
+                "mean_orientation_error_deg",
+                "mean_jerk_m_per_s3",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow({
+            "num_frequencies": len(records),
+            "num_samples": n,
+            "total_error_m": total_error,
+            "overall_mean_error_m": mean_error,
+            "overall_rmse_m": rmse,
+            "max_error_m": max_error,
+            "mean_orientation_error_deg": mean_ori,
+            "mean_jerk_m_per_s3": mean_jerk,
+        })
+    fig = plt.figure(figsize=(11, 4.2))
+    fig.patch.set_facecolor("white")
+    fig.text(0.05, 0.86, "Aggregate tracking summary", fontsize=16, weight="bold")
+    fig.text(0.05, 0.68, sentence, fontsize=12, wrap=True)
+    metric_text = (
+        f"Overall mean error:        {mean_error:.4f} m\n"
+        f"Overall RMSE:              {rmse:.4f} m\n"
+        f"Maximum error:             {max_error:.4f} m\n"
+        f"Mean orientation error:    {mean_ori:.3f}°\n"
+        f"Mean jerk:                 {mean_jerk:.4f} m/s³"
+    )
+    fig.text(0.05, 0.43, metric_text, family="monospace", fontsize=12, va="top")
+    plt.axis("off")
+    fig.savefig(os.path.join(output_dir, "aggregate_summary.png"), dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _save_xy_tracking_animation(path, freq, times, desired_pos, actual_pos, xy_limits, trail_s=1.0, fps=20):
+    """Animate desired vs actual XY motion so phase lag is visible over time."""
+    fig, ax = plt.subplots(figsize=(7, 7))
+    fig.suptitle(f"XY tracking through time at {freq:.2f} Hz")
+
+    (x_min, x_max), (y_min, y_max) = xy_limits
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min, y_max)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("x [m]")
+    ax.set_ylabel("y [m]")
+    ax.grid(alpha=0.25)
+
+    ax.plot(desired_pos[:, 0], desired_pos[:, 1], color="tab:blue", alpha=0.22, linewidth=2, label="desired path")
+    desired_trail, = ax.plot([], [], color="tab:blue", linewidth=2, label="desired trail")
+    actual_trail, = ax.plot([], [], color="tab:orange", linewidth=2, label="actual trail")
+    desired_point, = ax.plot([], [], "o", color="tab:blue", markersize=8, label="desired point")
+    actual_point, = ax.plot([], [], "o", color="tab:orange", markersize=8, label="end effector")
+    error_line, = ax.plot([], [], color="tab:red", linewidth=1.5, alpha=0.8, label="instantaneous error")
+    time_text = ax.text(0.02, 0.98, "", transform=ax.transAxes, va="top", family="monospace")
+    ax.legend(loc="lower left")
+
+    dt = float(times[1] - times[0]) if len(times) > 1 else 1.0 / fps
+    trail_steps = max(2, int(round(trail_s / dt)))
+    stride = max(1, int(round(1.0 / (fps * dt))))
+    frame_indices = list(range(0, len(times), stride))
+    if frame_indices[-1] != len(times) - 1:
+        frame_indices.append(len(times) - 1)
+
+    def update(frame_idx):
+        start = max(0, frame_idx - trail_steps + 1)
+        desired_trail.set_data(desired_pos[start:frame_idx + 1, 0], desired_pos[start:frame_idx + 1, 1])
+        actual_trail.set_data(actual_pos[start:frame_idx + 1, 0], actual_pos[start:frame_idx + 1, 1])
+        desired_point.set_data([desired_pos[frame_idx, 0]], [desired_pos[frame_idx, 1]])
+        actual_point.set_data([actual_pos[frame_idx, 0]], [actual_pos[frame_idx, 1]])
+        error_line.set_data(
+            [desired_pos[frame_idx, 0], actual_pos[frame_idx, 0]],
+            [desired_pos[frame_idx, 1], actual_pos[frame_idx, 1]],
+        )
+        err = np.linalg.norm(actual_pos[frame_idx] - desired_pos[frame_idx])
+        time_text.set_text(f"t = {times[frame_idx]:.2f} s\nerror = {err:.3f} m")
+        return desired_trail, actual_trail, desired_point, actual_point, error_line, time_text
+
+    ani = animation.FuncAnimation(fig, update, frames=frame_indices, interval=1000 / fps, blit=True)
+    ani.save(path, writer=animation.PillowWriter(fps=fps), dpi=120)
     plt.close(fig)
 
 
@@ -167,6 +305,33 @@ def _obs_term_dict(raw_env):
     return dict(raw_env.observation_manager.get_active_iterable_terms(0))
 
 
+def _set_eval_frequency(command_term, freq: float):
+    """Force one deterministic frequency for either single- or multi-frequency command terms."""
+    # Single-frequency command terms read cfg.frequency_hz inside _update_command().
+    command_term.cfg.frequency_hz = freq
+
+    # Multi-frequency command terms keep a live per-environment tensor instead. Updating only
+    # cfg.frequency_hz silently does nothing for them, so overwrite the tensor too when present.
+    if hasattr(command_term, "frequency_hz"):
+        command_term.frequency_hz.fill_(freq)
+
+    # The pose at phase zero is unchanged by frequency, but target velocity/acceleration depend on omega.
+    # Refresh them immediately so the very first policy observation of the rollout is consistent.
+    command_term._write_pose_from_phase(slice(None))
+
+
+def _configured_delay_steps(env_cfg) -> dict[str, dict[str, int]]:
+    """Return configured min/max actuator delays for metadata when delayed actuators are present."""
+    delays = {}
+    for actuator_name, actuator_cfg in env_cfg.scene.robot.actuators.items():
+        if hasattr(actuator_cfg, "min_delay") and hasattr(actuator_cfg, "max_delay"):
+            delays[actuator_name] = {
+                "min_delay_physics_steps": int(actuator_cfg.min_delay),
+                "max_delay_physics_steps": int(actuator_cfg.max_delay),
+            }
+    return delays
+
+
 def _delayed_position_target(robot, actuator_name: str, local_joint_index: int) -> float:
     """Read the delayed joint-position setpoint from a delayed actuator buffer for diagnostics only."""
     actuator = robot.actuators[actuator_name]
@@ -197,6 +362,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     )
     os.makedirs(output_dir, exist_ok=True)
     summaries = []
+    rollout_records = []
+    metadata = {
+        "task": args_cli.task,
+        "checkpoint": _portable_artifact_path(resume_path),
+        "frequencies_hz": list(args_cli.frequencies),
+        "num_steps": args_cli.num_steps,
+        "steady_state_start_s": args_cli.steady_state_start_s,
+        "seed": args_cli.seed,
+        "configured_actuator_delay": _configured_delay_steps(env_cfg),
+        "created_at_utc": datetime.now().isoformat(timespec="seconds"),
+    }
+    with open(os.path.join(output_dir, "run_metadata.json"), "w") as file:
+        json.dump(metadata, file, indent=2)
 
     # Prevent a timeout reset from happening in the middle of an evaluation rollout.
     #
@@ -247,9 +425,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     dt = wrapped_env.unwrapped.step_dt
 
     for freq_idx, freq in enumerate(frequencies):
-        # The live command term reads its cfg every update, so changing this value is enough to change
-        # the trajectory speed without rebuilding the environment.
-        command_term.cfg.frequency_hz = freq
+        # Force the requested deterministic sweep frequency after each reset. The base command reads
+        # cfg.frequency_hz, while the multi-frequency command owns a live frequency_hz tensor sampled
+        # on reset; _set_eval_frequency handles both contracts.
         if freq_idx == 0:
             # RslRlVecEnvWrapper already reset once during construction.
             obs = wrapped_env.get_observations()
@@ -258,6 +436,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             obs, _ = wrapped_env.reset()
             if version.parse(installed_version) >= version.parse("4.0.0"):
                 policy.reset(torch.ones(wrapped_env.num_envs, dtype=torch.long, device=wrapped_env.unwrapped.device))
+        _set_eval_frequency(command_term, freq)
+        # Refresh observations after changing velocity/acceleration-bearing command state so the policy's
+        # first action sees the same requested frequency that the trajectory will execute.
+        obs = wrapped_env.get_observations()
 
         desired_pos = []
         actual_pos = []
@@ -309,6 +491,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         metrics = _metric_bundle(times, desired_pos, actual_pos, desired_quat, actual_quat, args_cli.steady_state_start_s, dt)
 
         _save_performance_plot(os.path.join(output_dir, f"performance_{freq:.2f}Hz.png"), freq, times, desired_pos, actual_pos, metrics)
+        _save_metrics_plot(os.path.join(output_dir, f"metrics_{freq:.2f}Hz.png"), freq, metrics)
+        rollout_records.append({
+            "freq": freq,
+            "times": times,
+            "desired_pos": desired_pos,
+            "actual_pos": actual_pos,
+            "metrics": metrics,
+        })
         _save_diagnostics_plot(
             os.path.join(output_dir, f"diagnostics_{freq:.2f}Hz.png"),
             freq,
@@ -344,6 +534,32 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "mean_orientation_error_deg": metrics["mean_orientation_error_deg"],
         })
 
+    # Render XY animations only after all rollouts are known, so every frequency uses the same
+    # camera framing. Per-frequency autoscaling makes a tighter-cropped trajectory look faster
+    # even when playback timing is identical.
+    all_xy = np.concatenate(
+        [
+            np.concatenate([record["desired_pos"][:, :2], record["actual_pos"][:, :2]], axis=0)
+            for record in rollout_records
+        ],
+        axis=0,
+    )
+    x_pad = max(0.02, 0.08 * (all_xy[:, 0].max() - all_xy[:, 0].min()))
+    y_pad = max(0.02, 0.08 * (all_xy[:, 1].max() - all_xy[:, 1].min()))
+    xy_limits = (
+        (all_xy[:, 0].min() - x_pad, all_xy[:, 0].max() + x_pad),
+        (all_xy[:, 1].min() - y_pad, all_xy[:, 1].max() + y_pad),
+    )
+    for record in rollout_records:
+        _save_xy_tracking_animation(
+            os.path.join(output_dir, f"xy_tracking_{record['freq']:.2f}Hz.gif"),
+            record["freq"],
+            record["times"],
+            record["desired_pos"],
+            record["actual_pos"],
+            xy_limits,
+        )
+
     wrapped_env.close()
     _organize_episode_videos(video_root, frequencies)
 
@@ -351,6 +567,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         writer = csv.DictWriter(file, fieldnames=list(summaries[0].keys()))
         writer.writeheader()
         writer.writerows(summaries)
+    _save_aggregate_summary(output_dir, rollout_records)
     print(f"[INFO] Evaluation artifacts saved to: {output_dir}")
     for row in summaries:
         print(row)

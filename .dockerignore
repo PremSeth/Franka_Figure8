@@ -28,3 +28,9 @@ _isaac_sim?
 docker/.isaac-lab-docker-history
 # ignore uv environment
 env_isaaclab
+
+# Keep curated submission artifacts even though raw training videos/logs are ignored.
+!results/
+!results/**
+!checkpoints/
+!checkpoints/**
