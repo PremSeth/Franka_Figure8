@@ -62,7 +62,13 @@ from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 from isaaclab.envs import DirectMARLEnv, DirectMARLEnvCfg, DirectRLEnvCfg, ManagerBasedRLEnvCfg, multi_agent_to_single_agent
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.math import combine_frame_transforms, quat_error_magnitude
-from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper, handle_deprecated_rsl_rl_cfg
+from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper
+
+try:
+    from isaaclab_rl.rsl_rl import handle_deprecated_rsl_rl_cfg
+except ImportError:
+    def handle_deprecated_rsl_rl_cfg(agent_cfg, installed_version):
+        return agent_cfg
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import Franka_End_Effector_Tracking.tasks  # noqa: F401

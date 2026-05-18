@@ -17,8 +17,9 @@ import cli_args  # isort: skip
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
-parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
+parser.add_argument("--video", action="store_true", default=False, help="Record video during playback.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
+parser.add_argument("--video_dir", type=str, default=None, help="Directory to save playback videos. Defaults to <checkpoint_dir>/videos/play.")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
@@ -83,8 +84,13 @@ from isaaclab_rl.rsl_rl import (
     RslRlVecEnvWrapper,
     export_policy_as_jit,
     export_policy_as_onnx,
-    handle_deprecated_rsl_rl_cfg,
 )
+
+try:
+    from isaaclab_rl.rsl_rl import handle_deprecated_rsl_rl_cfg
+except ImportError:
+    def handle_deprecated_rsl_rl_cfg(agent_cfg, installed_version):
+        return agent_cfg
 from isaaclab_rl.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
 
 import isaaclab_tasks  # noqa: F401
@@ -141,13 +147,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # wrap for video recording
     if args_cli.video:
+        video_folder = os.path.abspath(args_cli.video_dir) if args_cli.video_dir is not None else os.path.join(log_dir, "videos", "play")
         video_kwargs = {
-            "video_folder": os.path.join(log_dir, "videos", "play"),
+            "video_folder": video_folder,
             "step_trigger": lambda step: step == 0,
             "video_length": args_cli.video_length,
             "disable_logger": True,
         }
-        print("[INFO] Recording videos during training.")
+        print("[INFO] Recording video during playback.")
         print_dict(video_kwargs, nesting=4)
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
