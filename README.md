@@ -146,7 +146,8 @@ Evaluate one checkpoint at all four fixed frequencies and save plots, GIFs, vide
 python scripts/rsl_rl/evaluate_tracking.py \
   --task Template-Franka-End-Effector-Tracking-Delayed-Multi-Frequency-With-Acceleration-Noisy-Eval-v0 \
   --checkpoint checkpoints/best_accel_noisy_38obs.pt \
-  --headless
+  --headless \
+  --output_dir evaluation_outputs/best_accel_noisy
 ```
 
 Each evaluation folder contains `performance_*.png`, `diagnostics_*.png`, `metrics_*.png`, `xy_tracking_*.gif`, simulator videos, `summary.csv`, and `aggregate_summary.*`.
