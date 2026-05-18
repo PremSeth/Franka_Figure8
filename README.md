@@ -154,18 +154,45 @@ Each evaluation folder contains `performance_*.png`, `diagnostics_*.png`, `metri
 
 ## Optional Docker workflow
 
-Docker is optional; it avoids local Python dependency setup but still requires an NVIDIA GPU plus Docker/NVIDIA container support. The image uses NVIDIA's prebuilt headless Isaac Lab container as its base, so this path is intended for headless training/evaluation rather than GUI playback.
+Docker is the easiest way to run this project without installing Isaac Lab into the host Python environment. It still requires an NVIDIA GPU, Docker, and NVIDIA Container Toolkit on the host. The Dockerfile starts from NVIDIA's prebuilt Isaac Lab `2.3.0` headless image, installs this external project, and is intended for headless evaluation/training rather than GUI playback.
+
+Build the image:
 
 ```bash
 docker build -f docker/Dockerfile -t franka-end-effector-tracking:latest .
+```
+
+Open a shell inside the container:
+
+```bash
 ./docker/run.sh
 ```
 
-Inside the container, run the same repo-relative commands shown above, for example:
+Run a one-command Docker verification. This builds the image, checks imports, lists the registered tasks, then runs a short 60-step headless evaluation:
 
 ```bash
-python scripts/rsl_rl/evaluate_tracking.py \
+./docker/verify_docker.sh
+```
+
+Or run the evaluation command manually inside Docker:
+
+```bash
+./docker/run.sh -- python scripts/rsl_rl/evaluate_tracking.py \
   --task Template-Franka-End-Effector-Tracking-Delayed-Multi-Frequency-With-Acceleration-Noisy-Eval-v0 \
   --checkpoint checkpoints/best_accel_noisy_38obs.pt \
-  --headless
+  --headless \
+  --output_dir outputs/docker_eval
+```
+
+Run 30 seconds of headless playback video inside Docker:
+
+```bash
+./docker/run.sh -- python scripts/rsl_rl/play.py \
+  --task Template-Franka-End-Effector-Tracking-Delayed-Multi-Frequency-With-Acceleration-Noisy-v0 \
+  --checkpoint checkpoints/best_accel_noisy_38obs.pt \
+  --num_envs 1 \
+  --headless \
+  --video \
+  --video_length 900 \
+  --video_dir videos/playback
 ```

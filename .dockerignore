@@ -34,3 +34,9 @@ env_isaaclab
 !results/**
 !checkpoints/
 !checkpoints/**
+
+# Local NVIDIA/Isaac shader caches
+nv_shadercache/
+**/nv_shadercache/
+**/GLCache/
+**/ComputeCache/
