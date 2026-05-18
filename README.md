@@ -4,27 +4,34 @@ This project trains a Franka Panda with PPO to follow a moving Cartesian figure-
 
 ## Results
 
-The five fixed-frequency evaluation bundles selected for review are in `results/`; start with `results/figure_8_delayed_and_multi_freq_and_noisy/aggregate_summary.png` for the strongest submitted run. Each folder contains only one aggregate summary PNG, the four robot videos, the diagnostics PNGs, the performance PNGs, and the animated XY GIFs needed for quick review.
+The five fixed-frequency evaluation bundles selected for review are in `results/`; start with `results/best_multi_frequency_with_acceleration/aggregate_summary.png` for the strongest submitted run. Each folder contains only one aggregate summary PNG, the four robot videos, the diagnostics PNGs, the performance PNGs, and the animated XY GIFs needed for quick review.
 
-| Results folder | Matching checkpoint | What it represents |
-| --- | --- | --- |
-| `figure_8_delayed_and_noisy` | `checkpoints/delayed_and_noisy.pt` | delayed + noisy single-frequency policy evaluated across all speeds |
-| `figure_8_delayed_and_noisy_high_freq` | `checkpoints/delayed_and_noisy_high_freq.pt` | high-frequency-finetuned policy |
-| `figure_8_delayed_and_noisy_multiple_freq_continued` | `checkpoints/delayed_and_noisy_multi_freq_35obs.pt` | 35-observation multi-frequency policy |
-| `figure_8_delayed_and_multi_freq_and_noisy` | `checkpoints/best_accel_noisy_38obs.pt` | best submitted 38-observation acceleration policy |
-| `figure_8_delayed_noisy_multi_freq_finetune_with_accel` | `checkpoints/accel_noisy_finetune_rerun_38obs.pt` | later acceleration fine-tune rerun |
+| Results folder | Matching checkpoint | Observations | What it represents |
+| --- | --- | --- | --- |
+| `single_frequency_0_25hz` | `checkpoints/delayed_and_noisy.pt` | 35 | delayed + noisy policy trained at `0.25 Hz`, evaluated across all speeds |
+| `single_frequency_0_75hz` | `checkpoints/delayed_and_noisy_high_freq.pt` | 35 | delayed + noisy policy trained at `0.75 Hz`, evaluated across all speeds |
+| `multi_frequency_no_acceleration` | `checkpoints/delayed_and_noisy_multi_freq_35obs.pt` | 35 | multi-frequency policy without target acceleration |
+| `best_multi_frequency_with_acceleration` | `checkpoints/best_accel_noisy_38obs.pt` | 38 | best submitted multi-frequency policy with target acceleration |
+| `later_acceleration_rerun` | `checkpoints/accel_noisy_finetune_rerun_38obs.pt` | 38 | later acceleration fine-tune rerun |
 
 ## How the best submitted model was built
 
-The strongest submitted model moved from a delayed/noisy controller to multi-frequency training, then widened the observation space from 35 to 38 inputs by copying the old columns and zero-initializing three new acceleration columns before fine-tuning. Its deterministic four-speed evaluation is packaged in `results/figure_8_delayed_and_multi_freq_and_noisy/`.
+The strongest submitted model moved from a delayed/noisy controller to multi-frequency training, then widened the observation space from 35 to 38 inputs by copying the old columns and zero-initializing three new acceleration columns before fine-tuning. Its deterministic four-speed evaluation is packaged in `results/best_multi_frequency_with_acceleration/`.
 
 ## Design note
 
-The policy state contains robot joint position/velocity, the desired end-effector pose, the previous action, desired target velocity, and in acceleration variants the desired target acceleration.  
+The 35-observation policy input is `9` relative joint positions + `9` relative joint velocities (the 7 arm joints plus 2 finger joints) + `7` desired target-pose values: target position (`x, y, z`) and target orientation (`qw, qx, qy, qz`) + `7` previous arm commands + `3` desired target-velocity values (`vx, vy, vz`). The 38-observation version adds `3` desired target-acceleration values (`ax, ay, az`).  
 The action is a 7-DoF joint-position command for the Franka arm.  
 The reward reuses Isaac Lab's reach-task design, adapted from reaching one pose to following a moving target: it penalizes end-effector position error, gives an extra bonus when the hand is very close to the target, penalizes orientation error, penalizes large changes between consecutive actions, and penalizes high joint speeds; the last two smoothness penalties are strengthened later in training. In equation form, `r = -0.2 d + 0.1(1 - tanh(d / 0.1)) - 0.1 e_rot - 0.0001 Δa² - 0.0001 v_joint²`, where `d` is Cartesian distance from the desired end-effector position, `e_rot` is orientation error, `Δa²` is the squared change from the previous action to the current action, and `v_joint²` is the sum of squared joint velocities.  
 The target is an analytic planar figure-eight, so desired position, velocity, and acceleration are generated directly from the trajectory rather than replayed from waypoints.  
 Evaluation runs deterministic fixed-speed rollouts at `0.25`, `0.50`, `0.75`, and `1.00` Hz and reports path plots, videos, position/orientation error, jerk, and aggregate tracking error.
+
+
+## Research findings
+
+The original approach I made was starting off with undelayed actuators and no sensors. My original plan was to take this as a base and just use curriculum to slowly make the process more difficult froms tage to stage. My first attempt involved adding noise first, and then adding delay afterwards. But after I did this, the model simply would not follow the ifugre-8 at all, it was too steep of a jump to make and the model sbhould have learned from delay at the start, so I restarted training now with delay, and no curriculum learning from a base environment with no noise and delay. After it learned how to follow this figure 8 with a variable 1-2 physics steps of delay (between 16.7-33.3 ms of delay), I added in sensor noise. The RL model at this point was still quite good at following the figure 8, but up until this point had only been trained with a frequency of .25 hz for the speed at which the figure-8 path moved. And in order to make it learn how to move at multiple frequencies, I made a new environment with a higher frequency at .75 hz and trained it there. At this point we have two finished RL models, one with delay and noise at .25 hz and one with delay and noise at .75 hz, the results are available in results/single_frequency_0_25hz and 0_75 hz respectively. And so my approach of using a higher frequency curriculum to allow it to adapt to both low and high frequency was wrong and not feasible for multi-frequency following. And so now, I went back and finetuned the high frequency model with multiple frequencies in a new environment where we randomly picks frequencies from a range of 0.25-1 hz which are the ranges it is evaluated on. Then I added noise and evaluated this one, its results are present in results/multi_frequency_no_acceleration. This reduced our error by about 14 meters overall across the 4 freq, but the model performed much better in high_freq than low _freq, showing that it really didnt gain that much from being trained with random frequencies across the range of low and high, it stuck to its previous high_frequency learning. And so through more brainstorming I came up with two more potential pathways, training from scratch with multi_frequencies and incorporating acceleration as a new observation. So I trained two new policies, one that finetunes our milt_frequency_no_acceleration with a new 38 observation space isntead of the 35 observation space by giving it the accleration in the x, y, and z, of the target_pose in the figure 8 and another polciy that has all 38 observations, but learns multiple_frequencies from scratch. After training both models, the 35-38 shift in observations dropped the total error in distance from 77, to 73 (results in results/later_acceleration_rerun). This was better, but still not good. And finally, the model trained from scratch with multiple frequencies and acceleration had a total error of distance of 50.046, a new signficant best by aroudn 23 meters. This increase was huge for me and made me realize that its a good idea to sometimes stop curriculum learning and relearn from scratch because it takes a lot of time to unlearn bad habits that a model might pickup from a previously skewed training environment. 
+
+
 
 ## Setup
 
