@@ -91,7 +91,6 @@ If local installation is undesirable, use the Docker workflow below instead; it 
 Pretrained checkpoints matching the packaged results are in `checkpoints/`; the examples below use the strongest submitted model.
 
 If you receive an error while running the non-headless play script below, its best to try using the headless version beneath it that will record a 30-second video for you instead and save it in videos/playback
-Headless video playback:
 
 ```bash
 python scripts/rsl_rl/play.py \
