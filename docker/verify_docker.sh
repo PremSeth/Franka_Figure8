@@ -15,6 +15,7 @@ docker build -f docker/Dockerfile -t "$IMAGE_NAME" .
   --checkpoint checkpoints/best_accel_noisy_38obs.pt \
   --headless \
   --num_steps 60 \
-  --output_dir outputs/docker_smoke_eval
+  --steady_state_start_s 0.5 \
+  --output_dir outputs/docker_verify_eval
 
-echo "Docker verification passed. Artifacts: outputs/docker_smoke_eval"
+echo "Docker verification passed. Artifacts: outputs/docker_verify_eval"
