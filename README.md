@@ -29,7 +29,7 @@ Evaluation runs deterministic fixed-speed rollouts at `0.25`, `0.50`, `0.75`, an
 
 ## Research findings
 
-The original approach I made was starting off with undelayed actuators and no sensor delay. My original plan was to take this as a base and just use curriculum to slowly make the process more difficult froms tage to stage. My first attempt involved adding noise first, and then adding delay afterwards. But after I did this, the model simply would not follow the figure-8 at all, it was too steep of a jump to make and the model should have learned from delay at the start, so I restarted training now with delay, and no curriculum learning from a base environment with no noise and delay. After it learned how to follow this figure 8 with a variable 1-2 physics steps of delay (between 16.7-33.3 ms of delay), I added in sensor noise. The RL model at this point was still quite good at following the figure 8, but up until this point had only been trained with a frequency of .25 hz for the speed at which the figure-8 path moved. And in order to make it learn how to move at multiple frequencies, I made a new environment with a higher frequency at .75 hz and trained it there. At this point we have two finished RL models, one with delay and noise at .25 hz and one with delay and noise at .75 hz, the results are available in results/single_frequency_0_25hz and 0_75 hz respectively. Both had total distance drifitng errors of about 91 meters. And so my approach of using a higher frequency curriculum to allow it to adapt to both low and high frequency was wrong and not feasible for multi-frequency following. And so now, I went back and finetuned the high frequency model with multiple frequencies in a new environment where we randomly pick frequencies of of 0.25, .5, .75, and 1 hz which are the ranges it is evaluated on. Then I added noise and evaluated this one, its results are present in results/multi_frequency_no_acceleration. This reduced our error by about 14 meters overall across the 4 freq, but the model performed much better in high_freq than low _freq, showing that it really didnt gain that much from being trained with random frequencies across the range of low and high, it stuck to its previous high_frequency learning. And so through more brainstorming I came up with two more potential pathways, training from scratch with multi_frequencies and incorporating acceleration as a new observation. So I trained two new policies, one that finetunes our milt_frequency_no_acceleration with a new 38 observation space isntead of the 35 observation space by giving it the accleration in the x, y, and z, of the target_pose in the figure 8 and another polciy that has all 38 observations, but learns multiple_frequencies from scratch. After training both models, the 35-38 shift in observations dropped the total error in distance from 77, to 73 (results in results/later_acceleration_rerun). This was better, but still not good. And finally, the model trained from scratch with multiple frequencies and acceleration had a total error of distance of 50.046, a new signficant best by around 23 meters (results in results/best_multi_frequency_with_acceleration_from_scratch). This increase was huge for me and made me realize that its a good idea to sometimes stop curriculum learning and relearn from scratch because it takes a lot of time to unlearn bad habits that a model might pickup from a previously skewed training environment. 
+The original approach I made was starting off with normal, non-delayed actuators and no sensor delay. My original plan was to take this as a base and just use curriculum to slowly make the process more difficult froms tage to stage. My first attempt involved adding noise first, and then adding delay afterwards. But after I did this, the model simply would not follow the figure-8 at all, it was too steep of a jump to make and the model should have learned from delay at the start, so I restarted training now with delay, and no curriculum learning from a base environment with no noise and delay. After it learned how to follow this figure 8 with a variable 1-2 physics steps of delay (between 16.7-33.3 ms of delay), I added in sensor noise. The RL model at this point was still quite good at following the figure 8, but up until this point had only been trained with a frequency of .25 hz for the speed at which the figure-8 path moved. And in order to make it learn how to move at multiple frequencies, I made a new environment with a higher frequency at .75 hz and trained it there. At this point we have two finished RL models, one with delay and noise at .25 hz and one with delay and noise at .75 hz, the results are available in results/single_frequency_0_25hz and 0_75 hz respectively. Both had total distance drifitng errors of about 91 meters. And so my approach of using a higher frequency curriculum to allow it to adapt to both low and high frequency was wrong and not feasible for multi-frequency following. And so now, I went back and finetuned the high frequency model with multiple frequencies in a new environment where we randomly pick frequencies of of 0.25, .5, .75, and 1 hz which are the ranges it is evaluated on. Then I added noise and evaluated this one, its results are present in results/multi_frequency_no_acceleration. This reduced our error by about 14 meters overall across the 4 freq, but the model performed much better in high_freq than low _freq, showing that it really didnt gain that much from being trained with random frequencies across the range of low and high, it stuck to its previous high_frequency learning. And so through more brainstorming I came up with two more potential pathways, training from scratch with multi_frequencies and incorporating acceleration as a new observation. So I trained two new policies, one that finetunes our milt_frequency_no_acceleration with a new 38 observation space isntead of the 35 observation space by giving it the accleration in the x, y, and z, of the target_pose in the figure 8 and another polciy that has all 38 observations, but learns multiple_frequencies from scratch. After training both models, the 35-38 shift in observations dropped the total error in distance from 77, to 73 (results in results/later_acceleration_rerun). This was better, but still not good. And finally, the model trained from scratch with multiple frequencies and acceleration had a total error of distance of 50.046, a new signficant best by around 23 meters (results in results/best_multi_frequency_with_acceleration_from_scratch). This increase was huge for me and made me realize that its a good idea to sometimes stop curriculum learning and relearn from scratch because it takes a lot of time to unlearn bad habits that a model might pickup from a previously skewed training environment. 
 
 ## Compute 
 
@@ -196,3 +196,63 @@ Run 30 seconds of headless playback video inside Docker:
   --video_length 900 \
   --video_dir videos/playback
 ```
+
+## Optional Apptainer workflow for HPC clusters
+
+My HPC clusters does not allow Docker directly and provide so I needed to use Apptainer to make sure my docker image worked and wanted to give this option to other users as well. This path uses the same NVIDIA Isaac Lab container image, but Apptainer `.sif` images are read-only, so the project is exposed through `PYTHONPATH` rather than installed with `pip install -e`, and writable Isaac Sim cache folders are bound from the host.
+
+Build the Isaac Lab image once:
+
+```bash
+mkdir -p ~/apptainer_franka/images
+cd ~/apptainer_franka/images
+apptainer build --force isaac-lab-2.3.0.sif docker://nvcr.io/nvidia/isaac-lab:2.3.0
+```
+
+Verify GPU passthrough:
+
+```bash
+apptainer exec --nv ~/apptainer_franka/images/isaac-lab-2.3.0.sif nvidia-smi
+```
+
+Create writable cache folders for Isaac Sim:
+
+```bash
+mkdir -p ~/apptainer_franka/kit_cache \
+         ~/apptainer_franka/kit_data \
+         ~/apptainer_franka/ov_cache \
+         ~/apptainer_franka/glcache \
+         ~/apptainer_franka/computecache \
+         ~/apptainer_franka/logs \
+         ~/apptainer_franka/documents
+```
+
+Run a short headless evaluation from the repository root:
+
+```bash
+cd Franka_Figure8
+
+apptainer exec --nv --fakeroot \
+  --bind "$PWD":/workspace/Franka_Figure8 \
+  --bind ~/apptainer_franka/kit_cache:/isaac-sim/kit/cache \
+  --bind ~/apptainer_franka/kit_data:/isaac-sim/kit/data \
+  --bind ~/apptainer_franka/ov_cache:/root/.cache/ov \
+  --bind ~/apptainer_franka/glcache:/root/.cache/nvidia/GLCache \
+  --bind ~/apptainer_franka/computecache:/root/.nv/ComputeCache \
+  --bind ~/apptainer_franka/logs:/root/.nvidia-omniverse/logs \
+  --bind ~/apptainer_franka/documents:/root/Documents \
+  ~/apptainer_franka/images/isaac-lab-2.3.0.sif \
+  bash -lc "cd /workspace/Franka_Figure8 && \
+    export PYTHONPATH=/workspace/Franka_Figure8/source/Franka_End_Effector_Tracking:\$PYTHONPATH && \
+    /isaac-sim/python.sh scripts/rsl_rl/evaluate_tracking.py \
+      --task Template-Franka-End-Effector-Tracking-Delayed-Multi-Frequency-With-Acceleration-Noisy-Eval-v0 \
+      --checkpoint checkpoints/best_accel_noisy_38obs.pt \
+      --headless \
+      --num_steps 60 \
+      --steady_state_start_s 0.5 \
+      --output_dir outputs/apptainer_test"
+```
+
+The generated artifacts appear on the host at `outputs/apptainer_test/` because the repository is bind-mounted into the container. For a full evaluation, remove `--num_steps 60` and `--steady_state_start_s 0.5`.
+
+If `--fakeroot` is unavailable on a login node, run the command from an interactive GPU node; some clusters expose different Apptainer permissions on login and compute nodes.
